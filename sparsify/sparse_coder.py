@@ -551,11 +551,8 @@ class MatryoshkaMidDecoder(MidDecoder):
         multi_losses = []
         slice_metrics = []
 
-        # Some losses need per-slice computation (AuxK, Multi-TopK, metrics)
+        # Some losses need per-slice computation (AuxK, Multi-TopK)
         for i in range(num_slices):
-            slice_size = int(slice_pre_acts[i].sum(dim=1).max().item())
-            slice_percent = (slice_size / self.sparse_coder.num_latents) * 100
-
             # Compute AuxK loss for this slice
             if (
                 self.dead_mask is not None
@@ -588,42 +585,8 @@ class MatryoshkaMidDecoder(MidDecoder):
                 multi_topk_fvu = y.new_tensor(0.0)
             multi_losses.append(multi_topk_fvu)
 
-            # Compute slice metrics
-            slice_pre_acts_i = slice_pre_acts[i]
-            slice_top_acts_i = slice_top_acts[i]
-            slice_top_indices_i = slice_top_indices[i]
-
-            # Pre-activation statistics
-            slice_pre_non_zero = (slice_pre_acts_i != 0).sum().item()
-            slice_pre_total = slice_pre_acts_i.numel()
-            slice_pre_sparsity = (
-                (slice_pre_total - slice_pre_non_zero) / slice_pre_total
-            ) * 100
-
-            # Top-k statistics
-            slice_top_non_zero = (slice_top_acts_i != 0).sum().item()
-            slice_top_total = slice_top_acts_i.numel()
-            slice_top_sparsity = (
-                (slice_top_total - slice_top_non_zero) / slice_top_total
-            ) * 100
-
+            # Keep only essential metrics for training
             slice_metric = {
-                f"slice_{i+1}_size": slice_size,
-                f"slice_{i+1}_percent": slice_percent,
-                f"slice_{i+1}_pre_non_zero": slice_pre_non_zero,
-                f"slice_{i+1}_pre_total": slice_pre_total,
-                f"slice_{i+1}_pre_sparsity": slice_pre_sparsity,
-                f"slice_{i+1}_pre_min": slice_pre_acts_i.min().item(),
-                f"slice_{i+1}_pre_max": slice_pre_acts_i.max().item(),
-                f"slice_{i+1}_pre_mean": slice_pre_acts_i.mean().item(),
-                f"slice_{i+1}_top_non_zero": slice_top_non_zero,
-                f"slice_{i+1}_top_total": slice_top_total,
-                f"slice_{i+1}_top_sparsity": slice_top_sparsity,
-                f"slice_{i+1}_top_min": slice_top_acts_i.min().item(),
-                f"slice_{i+1}_top_max": slice_top_acts_i.max().item(),
-                f"slice_{i+1}_top_mean": slice_top_acts_i.mean().item(),
-                f"slice_{i+1}_top_indices_min": slice_top_indices_i.min().item(),
-                f"slice_{i+1}_top_indices_max": slice_top_indices_i.max().item(),
                 f"slice_{i+1}_raw_fvu": fvu_losses[i].item(),
                 f"slice_{i+1}_raw_auxk": auxk_loss.item(),
                 f"slice_{i+1}_raw_multi_topk": multi_topk_fvu.item(),
@@ -711,54 +674,13 @@ class MatryoshkaMidDecoder(MidDecoder):
             # Create slice masks
             slice_masks = self._create_slice_masks()
 
-            # Collect metrics for wandb logging
+            # Collect essential metrics for wandb logging
             matryoshka_metrics = {
                 "activation": self.sparse_coder.cfg.activation,
                 "num_latents": self.sparse_coder.num_latents,
                 "expansion_factors": self.expansion_factors,
                 "num_slices": len(slice_masks),
             }
-
-            # Dead latent statistics
-            if self.dead_mask is not None:
-                num_dead = int(self.dead_mask.sum())
-                num_total = self.dead_mask.numel()
-                dead_percent = (num_dead / num_total) * 100
-                matryoshka_metrics.update(
-                    {
-                        "dead_latents": num_dead,
-                        "total_latents": num_total,
-                        "dead_percent": dead_percent,
-                        "live_percent": 100 - dead_percent,
-                    }
-                )
-            else:
-                matryoshka_metrics.update(
-                    {
-                        "dead_latents": 0,
-                        "total_latents": self.sparse_coder.num_latents,
-                        "dead_percent": 0.0,
-                        "live_percent": 100.0,
-                    }
-                )
-
-            # Main encoding statistics
-            main_acts = self.latent_acts
-            if isinstance(main_acts, torch.Tensor):
-                main_non_zero = (main_acts != 0).sum().item()
-                main_total = main_acts.numel()
-                main_sparsity = ((main_total - main_non_zero) / main_total) * 100
-                matryoshka_metrics.update(
-                    {
-                        "main_non_zero": main_non_zero,
-                        "main_total": main_total,
-                        "main_sparsity": main_sparsity,
-                        "main_activation_min": main_acts.min().item(),
-                        "main_activation_max": main_acts.max().item(),
-                        "main_activation_mean": main_acts.mean().item(),
-                        "main_activation_std": main_acts.std().item(),
-                    }
-                )
 
             # VECTORIZED SLICE COMPUTATION
             # Process all slices in parallel using batched operations
@@ -784,13 +706,10 @@ class MatryoshkaMidDecoder(MidDecoder):
                 slice_auxk_weighted = slice_auxk * slice_weight
                 slice_multi_weighted = slice_multi * slice_weight
 
-                # Add weight information to metrics
+                # Add essential weight information to metrics
                 slice_metrics[i].update(
                     {
                         f"slice_{i+1}_weight": slice_weight.item(),
-                        f"slice_{i+1}_weighted_fvu": slice_fvu_weighted.item(),
-                        f"slice_{i+1}_weighted_auxk": slice_auxk_weighted.item(),
-                        f"slice_{i+1}_weighted_multi_topk": slice_multi_weighted.item(),
                     }
                 )
 
@@ -799,15 +718,12 @@ class MatryoshkaMidDecoder(MidDecoder):
                 total_auxk_loss += slice_auxk_weighted
                 total_multi_topk_fvu += slice_multi_weighted
 
-            # Add aggregated results to metrics
+            # Add essential aggregated results to metrics
             matryoshka_metrics.update(
                 {
                     "total_weighted_fvu": total_fvu.item(),
                     "total_weighted_auxk": total_auxk_loss.item(),
                     "total_weighted_multi_topk": total_multi_topk_fvu.item(),
-                    "total_loss_sum": total_fvu.item()
-                    + total_auxk_loss.item()
-                    + total_multi_topk_fvu.item(),
                 }
             )
 
